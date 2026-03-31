@@ -1,0 +1,8 @@
+{
+  "max_position_pct": 0.10,
+  "kelly_fraction": 0.25,
+  "stop_loss_pct": 0.03,
+  "take_profit_pct": 0.06,
+  "max_drawdown_halt": 0.20,
+  "max_open_positions": 3
+}
