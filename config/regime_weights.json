@@ -1,0 +1,32 @@
+{
+  "trending_up": {
+    "technical_score": 0.25,
+    "funding_rate_score": 0.30,
+    "oi_delta_score": 0.25,
+    "ema_cross_score": 0.20
+  },
+  "trending_down": {
+    "technical_score": 0.25,
+    "funding_rate_score": 0.30,
+    "oi_delta_score": 0.25,
+    "ema_cross_score": 0.20
+  },
+  "ranging": {
+    "technical_score": 0.50,
+    "funding_rate_score": 0.20,
+    "oi_delta_score": 0.10,
+    "ema_cross_score": 0.20
+  },
+  "high_vol": {
+    "technical_score": 0.20,
+    "funding_rate_score": 0.40,
+    "oi_delta_score": 0.30,
+    "ema_cross_score": 0.10
+  },
+  "low_vol": {
+    "technical_score": 0.40,
+    "funding_rate_score": 0.20,
+    "oi_delta_score": 0.10,
+    "ema_cross_score": 0.30
+  }
+}

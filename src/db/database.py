@@ -33,6 +33,10 @@ def init_db():
             bb_lower REAL,
             bb_mid REAL,
             bb_upper REAL,
+            atr REAL,
+            ema_fast REAL,
+            ema_slow REAL,
+            ema_cross REAL,
             UNIQUE(timestamp, symbol)
         )
     """)
@@ -119,6 +123,13 @@ def init_db():
         )
     """)
 
+    # ── Session 3: migration for existing DBs ──────────────────────────────────
+    for col in ("atr", "ema_fast", "ema_slow", "ema_cross"):
+        try:
+            conn.execute(f"ALTER TABLE candles ADD COLUMN {col} REAL")
+        except Exception:
+            pass  # column already exists
+
     conn.commit()
     conn.close()
 
@@ -129,6 +140,7 @@ def insert_candles(df):
     cols = [
         "timestamp", "symbol", "open", "high", "low", "close", "volume",
         "rsi", "macd", "macd_signal", "macd_hist", "bb_lower", "bb_mid", "bb_upper",
+        "atr", "ema_fast", "ema_slow", "ema_cross",
     ]
     for col in cols:
         if col not in df.columns:

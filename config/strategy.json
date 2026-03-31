@@ -1,4 +1,12 @@
 {
-  "sentiment_weight": 0.4,
-  "technical_weight": 0.6
+  "version": 2,
+  "signals": {
+    "technical_score":    { "enabled": true,  "description": "RSI+MACD+BB composite" },
+    "funding_rate_score": { "enabled": true,  "description": "Funding rate z-score" },
+    "oi_delta_score":     { "enabled": true,  "description": "Open interest delta" },
+    "ema_cross_score":    { "enabled": true,  "description": "EMA 20/50 cross direction" },
+    "polymarket_score":   { "enabled": false, "description": "Polymarket implied prob — enabled in S8" }
+  },
+  "min_signal_confidence": 0.60,
+  "signal_ttl_minutes": 15
 }

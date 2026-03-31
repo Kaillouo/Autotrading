@@ -31,4 +31,15 @@ def compute_indicators(df):
         df["bb_mid"] = None
         df["bb_upper"] = None
 
+    # ATR — needed for stop-loss sizing (risk rules use ATR multiples)
+    df["atr"] = ta.atr(df["high"], df["low"], df["close"], length=14)
+
+    # EMA cross — core signal input
+    df["ema_fast"] = ta.ema(df["close"], length=20)
+    df["ema_slow"] = ta.ema(df["close"], length=50)
+    # 1=bullish (fast > slow), 0=bearish, NaN when insufficient data
+    ema_fast = pd.to_numeric(df["ema_fast"], errors="coerce")
+    ema_slow = pd.to_numeric(df["ema_slow"], errors="coerce")
+    df["ema_cross"] = (ema_fast > ema_slow).where(ema_slow.notna()).astype("Int64")
+
     return df
