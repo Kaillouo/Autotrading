@@ -10,18 +10,27 @@ import sys
 from datetime import date
 
 import pandas as pd
-import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.db.database import get_connection
 from src.signals.technical import compute_indicators
+from src.signals.regime_detector import classify_regime
 
 # ── Load regime weights ──────────────────────────────────────────────────────
 
 WEIGHTS_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "regime_weights.json")
 with open(WEIGHTS_PATH) as f:
     REGIME_WEIGHTS = json.load(f)
+
+# ── Load risk config ─────────────────────────────────────────────────────────
+
+RISK_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "risk.json")
+with open(RISK_PATH) as f:
+    RISK_CONFIG = json.load(f)
+
+STOP_ATR_MULT = RISK_CONFIG["stop_loss_atr_multiple"]
+TP_ATR_MULT = RISK_CONFIG["take_profit_atr_multiple"]
 
 # ── Signal Scoring Functions ─────────────────────────────────────────────────
 
@@ -75,30 +84,6 @@ def score_oi_delta(df, idx) -> float:
 def score_ema_cross(row) -> float:
     """EMA cross: 1 (fast > slow) -> bullish"""
     return 0.7 if row.get("ema_cross", 0) == 1 else 0.3
-
-
-# ── Regime Classification ────────────────────────────────────────────────────
-
-
-def classify_regime(df, idx) -> str:
-    row = df.iloc[idx]
-    atr = row.get("atr")
-    if idx < 30 or not atr:
-        return "ranging"
-    atr_avg_30 = df["atr"].iloc[max(0, idx - 30):idx].mean()
-    if atr_avg_30 and atr_avg_30 > 0:
-        if atr > 1.5 * atr_avg_30:
-            return "high_vol"
-        if atr < 0.6 * atr_avg_30:
-            return "low_vol"
-    ema_cross = row.get("ema_cross", 0)
-    ema_slow = row.get("ema_slow")
-    close = row.get("close")
-    if ema_cross == 1 and close and ema_slow and close > ema_slow:
-        return "trending_up"
-    if ema_cross == 0 and close and ema_slow and close < ema_slow:
-        return "trending_down"
-    return "ranging"
 
 
 # ── Main Backtest ────────────────────────────────────────────────────────────
@@ -258,8 +243,8 @@ def run_backtest():
             if not atr or pd.isna(atr) or atr <= 0:
                 continue  # can't set stops without ATR
 
-            stop = entry_price - 1.5 * atr
-            tp = entry_price + 3.0 * atr
+            stop = entry_price - STOP_ATR_MULT * atr
+            tp = entry_price + TP_ATR_MULT * atr
             size_usd = capital * POSITION_SIZE
 
             position = {
