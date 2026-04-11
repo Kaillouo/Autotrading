@@ -10,10 +10,11 @@
   "min_signal_confidence": 0.60,
   "signal_ttl_minutes": 15,
   "backtest": {
-    "entry_threshold": 0.60,
-    "exit_threshold": 0.40,
+    "entry_threshold": 0.62,
+    "exit_threshold": 0.35,
     "warmup_candles": 50,
     "position_size_pct": 0.08,
-    "initial_capital": 10000.0
+    "initial_capital": 10000.0,
+    "enable_shorts": true
   }
 }

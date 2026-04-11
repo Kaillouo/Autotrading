@@ -1,8 +1,8 @@
 {
   "max_position_pct": 0.10,
   "kelly_fraction": 0.25,
-  "stop_loss_atr_multiple": 1.5,
-  "take_profit_atr_multiple": 3.0,
+  "stop_loss_atr_multiple": 2.0,
+  "take_profit_atr_multiple": 4.0,
   "max_drawdown_halt": 0.20,
   "max_open_positions": 3,
   "min_signal_confidence": 0.60,

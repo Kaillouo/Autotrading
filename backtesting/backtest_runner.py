@@ -1,8 +1,12 @@
 """
 Session 3 Backtester — Pure Python signal scoring on historical DB data.
 No LLM calls, no live exchange. Reads from trading.db only.
+
+run_backtest() accepts optional parameter overrides so parameter_sweep.py
+can call it in a tight loop without reloading configs each time.
 """
 
+import copy
 import json
 import math
 import os
@@ -45,6 +49,7 @@ EXIT_THRESHOLD  = _BT["exit_threshold"]
 WARMUP          = _BT["warmup_candles"]
 POSITION_SIZE   = _BT["position_size_pct"]
 INITIAL_CAPITAL = _BT["initial_capital"]
+ENABLE_SHORTS   = _BT.get("enable_shorts", False)
 
 # ── Signal Scoring Functions ─────────────────────────────────────────────────
 
@@ -137,14 +142,48 @@ def load_data() -> pd.DataFrame:
     return candles
 
 
-def run_backtest():
-    print("Loading data from DB...")
-    df = load_data()
-    print(f"  Loaded {len(df)} candles")
+def run_backtest(
+    df: pd.DataFrame = None,
+    stop_atr_mult: float = None,
+    tp_atr_mult: float = None,
+    entry_threshold: float = None,
+    exit_threshold: float = None,
+    trending_up_ema_weight: float = None,
+    silent: bool = False,
+    save_results: bool = True,
+) -> dict:
+    """
+    Run the backtest. All parameters are optional — if None, values from
+    config files are used. Pass df to skip DB load (for parameter sweep).
 
-    # Recompute indicators to ensure ATR/EMA are populated
-    print("Computing indicators...")
-    df = compute_indicators(df)
+    trending_up_ema_weight: if set, overrides ema_cross_score weight in
+    trending_up regime, redistributing the delta to funding_rate_score.
+    """
+    # ── Resolve effective parameters ─────────────────────────────────────────
+    _stop    = stop_atr_mult    if stop_atr_mult    is not None else STOP_ATR_MULT
+    _tp      = tp_atr_mult      if tp_atr_mult      is not None else TP_ATR_MULT
+    _entry   = entry_threshold  if entry_threshold  is not None else ENTRY_THRESHOLD
+    _exit    = exit_threshold   if exit_threshold   is not None else EXIT_THRESHOLD
+
+    # Build local weight dict (possibly with overridden trending_up ema weight)
+    if trending_up_ema_weight is not None:
+        local_weights = copy.deepcopy(REGIME_WEIGHTS)
+        delta = local_weights["trending_up"]["ema_cross_score"] - trending_up_ema_weight
+        local_weights["trending_up"]["ema_cross_score"] = trending_up_ema_weight
+        local_weights["trending_up"]["funding_rate_score"] += delta
+    else:
+        local_weights = REGIME_WEIGHTS
+
+    # ── Load and prepare data ─────────────────────────────────────────────────
+    if df is None:
+        if not silent:
+            print("Loading data from DB...")
+        df = load_data()
+        if not silent:
+            print(f"  Loaded {len(df)} candles")
+        if not silent:
+            print("Computing indicators...")
+        df = compute_indicators(df)
 
     # Convert to numeric where needed
     for col in ("atr", "ema_fast", "ema_slow", "ema_cross", "rsi", "macd_hist",
@@ -153,53 +192,45 @@ def run_backtest():
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     capital = INITIAL_CAPITAL
-    position = None  # dict with entry_price, entry_idx, stop, tp, size_usd
+    position = None  # dict with entry_price, entry_idx, stop, tp, size_usd, direction
     trades = []
     equity_curve = []
     regime_counts = {}
 
-    print(f"Running backtest on {len(df) - WARMUP} candles (warmup={WARMUP})...")
+    if not silent:
+        print(f"Running backtest on {len(df) - WARMUP} candles (warmup={WARMUP})...")
 
     for i in range(WARMUP, len(df)):
         row = df.iloc[i]
         close = row["close"]
 
-        # Track equity
+        # Track equity (direction-aware unrealized PnL)
         unrealized = 0
         if position:
-            unrealized = (close - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+            if position["direction"] == "long":
+                unrealized = (close - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+            else:
+                unrealized = (position["entry_price"] - close) / position["entry_price"] * position["size_usd"]
         equity_curve.append(capital + unrealized)
 
-        # Check exit conditions if in position
+        # Check stop/TP exit conditions if in position
         if position:
-            low = row["low"]
+            low  = row["low"]
             high = row["high"]
 
-            # Stop loss hit
-            if low <= position["stop"]:
-                exit_price = position["stop"]
-                pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
-                commission = position["size_usd"] * COMMISSION_PCT * 2
-                pnl -= commission
-                capital += pnl
-                trades.append({
-                    "entry_idx": position["entry_idx"],
-                    "exit_idx": i,
-                    "entry_price": position["entry_price"],
-                    "exit_price": exit_price,
-                    "pnl": pnl,
-                    "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
-                    "exit_reason": "stop",
-                    "regime": position["regime"],
-                    "commission": commission,
-                })
-                position = None
-                continue
+            if position["direction"] == "long":
+                stop_hit = low  <= position["stop"]
+                tp_hit   = high >= position["tp"]
+            else:
+                stop_hit = high >= position["stop"]  # short: stop if price rises
+                tp_hit   = low  <= position["tp"]    # short: TP if price falls
 
-            # Take profit hit
-            if high >= position["tp"]:
-                exit_price = position["tp"]
-                pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+            if stop_hit or tp_hit:
+                exit_price = position["stop"] if stop_hit else position["tp"]
+                if position["direction"] == "long":
+                    pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+                else:
+                    pnl = (position["entry_price"] - exit_price) / position["entry_price"] * position["size_usd"]
                 commission = position["size_usd"] * COMMISSION_PCT * 2
                 pnl -= commission
                 capital += pnl
@@ -210,8 +241,9 @@ def run_backtest():
                     "exit_price": exit_price,
                     "pnl": pnl,
                     "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
-                    "exit_reason": "tp",
+                    "exit_reason": "stop" if stop_hit else "tp",
                     "regime": position["regime"],
+                    "direction": position["direction"],
                     "commission": commission,
                 })
                 position = None
@@ -222,63 +254,89 @@ def run_backtest():
         regime_counts[regime] = regime_counts.get(regime, 0) + 1
 
         # Score signals
-        weights = REGIME_WEIGHTS.get(regime, REGIME_WEIGHTS["ranging"])
-        tech = score_technical(row)
+        weights = local_weights.get(regime, local_weights["ranging"])
+        tech    = score_technical(row)
         funding = score_funding_rate(row)
-        oi = score_oi_delta(df, i)
-        ema = score_ema_cross(row)
+        oi      = score_oi_delta(df, i)
+        ema     = score_ema_cross(row)
 
         composite = (
-            weights["technical_score"] * tech
+            weights["technical_score"]    * tech
             + weights["funding_rate_score"] * funding
-            + weights["oi_delta_score"] * oi
-            + weights["ema_cross_score"] * ema
+            + weights["oi_delta_score"]     * oi
+            + weights["ema_cross_score"]    * ema
         )
 
-        # Sell signal exits position
-        if position and composite < EXIT_THRESHOLD:
-            exit_price = close
-            pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
-            commission = position["size_usd"] * COMMISSION_PCT * 2
-            pnl -= commission
-            capital += pnl
-            trades.append({
-                "entry_idx": position["entry_idx"],
-                "exit_idx": i,
-                "entry_price": position["entry_price"],
-                "exit_price": exit_price,
-                "pnl": pnl,
-                "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
-                "exit_reason": "sell_signal",
-                "regime": position["regime"],
-                "commission": commission,
-            })
-            position = None
+        # Signal exit for open position (direction-aware)
+        if position:
+            close_long  = position["direction"] == "long"  and composite < _exit
+            cover_short = position["direction"] == "short" and composite > _entry
+            if close_long or cover_short:
+                exit_price = close
+                if position["direction"] == "long":
+                    pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+                else:
+                    pnl = (position["entry_price"] - exit_price) / position["entry_price"] * position["size_usd"]
+                commission = position["size_usd"] * COMMISSION_PCT * 2
+                pnl -= commission
+                capital += pnl
+                trades.append({
+                    "entry_idx": position["entry_idx"],
+                    "exit_idx": i,
+                    "entry_price": position["entry_price"],
+                    "exit_price": exit_price,
+                    "pnl": pnl,
+                    "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
+                    "exit_reason": "sell_signal",
+                    "regime": position["regime"],
+                    "direction": position["direction"],
+                    "commission": commission,
+                })
+                position = None
 
-        # Buy signal opens position
-        if not position and composite > ENTRY_THRESHOLD and i + 1 < len(df):
-            entry_price = df.iloc[i + 1]["open"]  # enter at next candle's open
+        # Long entry
+        if not position and composite > _entry and i + 1 < len(df):
+            entry_price = df.iloc[i + 1]["open"]
             atr = row.get("atr")
             if not atr or pd.isna(atr) or atr <= 0:
-                continue  # can't set stops without ATR
+                continue
 
-            stop = entry_price - STOP_ATR_MULT * atr
-            tp = entry_price + TP_ATR_MULT * atr
             size_usd = capital * POSITION_SIZE
-
             position = {
                 "entry_price": entry_price,
                 "entry_idx": i + 1,
-                "stop": stop,
-                "tp": tp,
+                "stop": entry_price - _stop * atr,
+                "tp":   entry_price + _tp   * atr,
                 "size_usd": size_usd,
                 "regime": regime,
+                "direction": "long",
+            }
+
+        # Short entry (trending_down + bearish composite)
+        elif not position and ENABLE_SHORTS and composite < _exit and regime == "trending_down" and i + 1 < len(df):
+            entry_price = df.iloc[i + 1]["open"]
+            atr = row.get("atr")
+            if not atr or pd.isna(atr) or atr <= 0:
+                continue
+
+            size_usd = capital * POSITION_SIZE
+            position = {
+                "entry_price": entry_price,
+                "entry_idx": i + 1,
+                "stop": entry_price + _stop * atr,  # stop on price rising
+                "tp":   entry_price - _tp   * atr,  # TP on price falling
+                "size_usd": size_usd,
+                "regime": regime,
+                "direction": "short",
             }
 
     # Close any open position at last close
     if position:
         exit_price = df.iloc[-1]["close"]
-        pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+        if position["direction"] == "long":
+            pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+        else:
+            pnl = (position["entry_price"] - exit_price) / position["entry_price"] * position["size_usd"]
         commission = position["size_usd"] * COMMISSION_PCT * 2
         pnl -= commission
         capital += pnl
@@ -291,6 +349,7 @@ def run_backtest():
             "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
             "exit_reason": "end_of_data",
             "regime": position["regime"],
+            "direction": position["direction"],
             "commission": commission,
         })
         position = None
@@ -323,49 +382,52 @@ def run_backtest():
     else:
         sharpe = 0.0
 
-    # Regime breakdown
+    # Regime+direction trade breakdown
     regime_trades = {}
     for t in trades:
-        r = t["regime"]
-        if r not in regime_trades:
-            regime_trades[r] = {"count": 0, "wins": 0, "total_pnl": 0}
-        regime_trades[r]["count"] += 1
-        regime_trades[r]["total_pnl"] += t["pnl"]
+        key = f"{t['regime']}_{t['direction']}"
+        if key not in regime_trades:
+            regime_trades[key] = {"count": 0, "wins": 0, "total_pnl": 0}
+        regime_trades[key]["count"] += 1
+        regime_trades[key]["total_pnl"] += t["pnl"]
         if t["pnl"] > 0:
-            regime_trades[r]["wins"] += 1
+            regime_trades[key]["wins"] += 1
 
-    # ── Print Results ────────────────────────────────────────────────────────
-
-    print("\n" + "=" * 60)
-    print("BACKTEST RESULTS")
-    print("=" * 60)
-    print(f"  Period:          {df.iloc[WARMUP]['timestamp']} -> {df.iloc[-1]['timestamp']}")
-    print(f"  Candles:         {len(df)} ({len(df) - WARMUP} after warmup)")
-    print(f"  Initial capital: ${INITIAL_CAPITAL:,.2f}")
-    print(f"  Final capital:   ${capital:,.2f}")
-    print(f"  Total return:    {total_return_pct:+.2f}%")
-    print(f"  Annualized Sharpe: {sharpe:.3f}")
-    print(f"  Win rate:        {win_rate:.1f}% ({len(wins)}/{trade_count})")
-    print(f"  Max drawdown:    {max_dd * 100:.2f}%")
-    print(f"  Trade count:     {trade_count}")
-
-    print("\n  Regime distribution (candles):")
-    for regime, count in sorted(regime_counts.items(), key=lambda x: -x[1]):
-        print(f"    {regime:16s} {count:5d}")
-
-    print("\n  Regime trade breakdown:")
-    for regime, stats in sorted(regime_trades.items(), key=lambda x: -x[1]["count"]):
-        wr = stats["wins"] / stats["count"] * 100 if stats["count"] else 0
-        print(f"    {regime:16s}  trades={stats['count']:3d}  wins={stats['wins']:3d}  "
-              f"win_rate={wr:.0f}%  pnl=${stats['total_pnl']:+.2f}")
-
-    print("\n  Exit reason breakdown:")
     exit_reasons = {}
     for t in trades:
         r = t["exit_reason"]
         exit_reasons[r] = exit_reasons.get(r, 0) + 1
-    for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
-        print(f"    {reason:16s} {count:3d}")
+
+    # ── Print Results ────────────────────────────────────────────────────────
+
+    if not silent:
+        print("\n" + "=" * 60)
+        print("BACKTEST RESULTS")
+        print("=" * 60)
+        print(f"  Period:          {df.iloc[WARMUP]['timestamp']} -> {df.iloc[-1]['timestamp']}")
+        print(f"  Candles:         {len(df)} ({len(df) - WARMUP} after warmup)")
+        print(f"  Initial capital: ${INITIAL_CAPITAL:,.2f}")
+        print(f"  Final capital:   ${capital:,.2f}")
+        print(f"  Total return:    {total_return_pct:+.2f}%")
+        print(f"  Annualized Sharpe: {sharpe:.3f}")
+        print(f"  Win rate:        {win_rate:.1f}% ({len(wins)}/{trade_count})")
+        print(f"  Max drawdown:    {max_dd * 100:.2f}%")
+        print(f"  Trade count:     {trade_count}")
+        print(f"  Short selling:   {'enabled' if ENABLE_SHORTS else 'disabled'}")
+
+        print("\n  Regime distribution (candles):")
+        for regime, count in sorted(regime_counts.items(), key=lambda x: -x[1]):
+            print(f"    {regime:16s} {count:5d}")
+
+        print("\n  Regime+direction trade breakdown:")
+        for key, stats in sorted(regime_trades.items(), key=lambda x: -x[1]["count"]):
+            wr = stats["wins"] / stats["count"] * 100 if stats["count"] else 0
+            print(f"    {key:28s}  trades={stats['count']:3d}  wins={stats['wins']:3d}  "
+                  f"win_rate={wr:.0f}%  pnl=${stats['total_pnl']:+.2f}")
+
+        print("\n  Exit reason breakdown:")
+        for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
+            print(f"    {reason:16s} {count:3d}")
 
     # ── Save Results JSON ────────────────────────────────────────────────────
 
@@ -387,21 +449,24 @@ def run_backtest():
         "exit_reasons": exit_reasons,
     }
 
-    results_path = os.path.join(
-        os.path.dirname(__file__),
-        f"results_{date.today().isoformat()}.json",
-    )
-    with open(results_path, "w") as f:
-        json.dump(results, f, indent=2, default=str)
-    print(f"\n  Results saved to: {results_path}")
+    if save_results:
+        results_path = os.path.join(
+            os.path.dirname(__file__),
+            f"results_{date.today().isoformat()}.json",
+        )
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        if not silent:
+            print(f"\n  Results saved to: {results_path}")
 
     # ── Exit Criteria ────────────────────────────────────────────────────────
 
-    if sharpe > 0.8:
-        print("\nEXIT CRITERIA MET -- Sharpe > 0.8 -- ready for S4.")
-    else:
-        print(f"\nSharpe {sharpe:.3f} < 0.8 -- not yet ready for S4.")
-        print("  Weakest signals by regime — review regime_weights.json tuning.")
+    if not silent:
+        if sharpe > 0.8:
+            print("\nEXIT CRITERIA MET -- Sharpe > 0.8 -- ready for S4.")
+        else:
+            print(f"\nSharpe {sharpe:.3f} < 0.8 -- not yet ready for S4.")
+            print("  Weakest signals by regime -- review regime_weights.json tuning.")
 
     return results
 
