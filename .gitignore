@@ -13,6 +13,9 @@ build/
 # Data
 data/*.db
 
+# Logs
+logs/
+
 # IDE
 .vscode/
 .idea/

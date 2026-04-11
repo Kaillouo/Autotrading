@@ -3,13 +3,13 @@ Bybit derivatives data: funding rates, open interest, liquidations.
 Uses the ccxt client from bybit_client — no duplicate connection setup.
 """
 
-import logging
 import numpy as np
 import pandas as pd
 
 from src.data.bybit_client import get_exchange
+from src.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Bybit linear perpetual symbol format
 BTC_PERP = "BTC/USDT:USDT"

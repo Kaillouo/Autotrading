@@ -31,6 +31,20 @@ with open(RISK_PATH) as f:
 
 STOP_ATR_MULT = RISK_CONFIG["stop_loss_atr_multiple"]
 TP_ATR_MULT = RISK_CONFIG["take_profit_atr_multiple"]
+COMMISSION_PCT = RISK_CONFIG["commission_pct"]
+
+# ── Load strategy config ──────────────────────────────────────────────────────
+
+STRATEGY_PATH = os.path.join(os.path.dirname(__file__), "..", "config", "strategy.json")
+with open(STRATEGY_PATH) as f:
+    STRATEGY_CONFIG = json.load(f)
+
+_BT = STRATEGY_CONFIG["backtest"]
+ENTRY_THRESHOLD = _BT["entry_threshold"]
+EXIT_THRESHOLD  = _BT["exit_threshold"]
+WARMUP          = _BT["warmup_candles"]
+POSITION_SIZE   = _BT["position_size_pct"]
+INITIAL_CAPITAL = _BT["initial_capital"]
 
 # ── Signal Scoring Functions ─────────────────────────────────────────────────
 
@@ -138,10 +152,6 @@ def run_backtest():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    WARMUP = 50
-    POSITION_SIZE = 0.08  # 8% of capital
-    INITIAL_CAPITAL = 10000.0
-
     capital = INITIAL_CAPITAL
     position = None  # dict with entry_price, entry_idx, stop, tp, size_usd
     trades = []
@@ -169,6 +179,8 @@ def run_backtest():
             if low <= position["stop"]:
                 exit_price = position["stop"]
                 pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+                commission = position["size_usd"] * COMMISSION_PCT * 2
+                pnl -= commission
                 capital += pnl
                 trades.append({
                     "entry_idx": position["entry_idx"],
@@ -179,6 +191,7 @@ def run_backtest():
                     "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
                     "exit_reason": "stop",
                     "regime": position["regime"],
+                    "commission": commission,
                 })
                 position = None
                 continue
@@ -187,6 +200,8 @@ def run_backtest():
             if high >= position["tp"]:
                 exit_price = position["tp"]
                 pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+                commission = position["size_usd"] * COMMISSION_PCT * 2
+                pnl -= commission
                 capital += pnl
                 trades.append({
                     "entry_idx": position["entry_idx"],
@@ -197,6 +212,7 @@ def run_backtest():
                     "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
                     "exit_reason": "tp",
                     "regime": position["regime"],
+                    "commission": commission,
                 })
                 position = None
                 continue
@@ -220,9 +236,11 @@ def run_backtest():
         )
 
         # Sell signal exits position
-        if position and composite < 0.4:
+        if position and composite < EXIT_THRESHOLD:
             exit_price = close
             pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+            commission = position["size_usd"] * COMMISSION_PCT * 2
+            pnl -= commission
             capital += pnl
             trades.append({
                 "entry_idx": position["entry_idx"],
@@ -233,11 +251,12 @@ def run_backtest():
                 "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
                 "exit_reason": "sell_signal",
                 "regime": position["regime"],
+                "commission": commission,
             })
             position = None
 
         # Buy signal opens position
-        if not position and composite > 0.6 and i + 1 < len(df):
+        if not position and composite > ENTRY_THRESHOLD and i + 1 < len(df):
             entry_price = df.iloc[i + 1]["open"]  # enter at next candle's open
             atr = row.get("atr")
             if not atr or pd.isna(atr) or atr <= 0:
@@ -260,6 +279,8 @@ def run_backtest():
     if position:
         exit_price = df.iloc[-1]["close"]
         pnl = (exit_price - position["entry_price"]) / position["entry_price"] * position["size_usd"]
+        commission = position["size_usd"] * COMMISSION_PCT * 2
+        pnl -= commission
         capital += pnl
         trades.append({
             "entry_idx": position["entry_idx"],
@@ -270,6 +291,7 @@ def run_backtest():
             "pnl_pct": (exit_price - position["entry_price"]) / position["entry_price"],
             "exit_reason": "end_of_data",
             "regime": position["regime"],
+            "commission": commission,
         })
         position = None
 
@@ -359,6 +381,7 @@ def run_backtest():
         "win_rate_pct": round(win_rate, 2),
         "max_drawdown_pct": round(max_dd * 100, 4),
         "trade_count": trade_count,
+        "commission_pct": COMMISSION_PCT,
         "regime_distribution": regime_counts,
         "regime_trade_breakdown": regime_trades,
         "exit_reasons": exit_reasons,

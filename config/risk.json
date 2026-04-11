@@ -6,5 +6,6 @@
   "max_drawdown_halt": 0.20,
   "max_open_positions": 3,
   "min_signal_confidence": 0.60,
-  "signal_ttl_minutes": 15
+  "signal_ttl_minutes": 15,
+  "commission_pct": 0.001
 }
