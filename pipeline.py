@@ -1,12 +1,16 @@
 """Main pipeline: fetch OHLCV -> compute indicators -> store to DB -> fetch derivatives
--> Fast Brain signal -> Rules Engine + execute."""
+-> sync positions -> Fast Brain signal -> Rules Engine + execute."""
 
 import argparse
 import json
 import os
 import sys
 import io
+import time
 from datetime import datetime, timezone
+
+# ── Absolute base dir — safe when run from any CWD (e.g. Task Scheduler) ──────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Force UTF-8 output on Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -19,7 +23,31 @@ from src.db.database import init_db, insert_candles, insert_derivatives_data, qu
 
 logger = get_logger("pipeline")
 
-_POSITIONS_PATH = os.path.join(os.path.dirname(__file__), "data", "positions.json")
+_POSITIONS_PATH = os.path.join(BASE_DIR, "data", "positions.json")
+_LOCK_FILE = os.path.join(BASE_DIR, "data", "pipeline.lock")
+_LOCK_MAX_AGE_SECONDS = 600  # 10 minutes
+
+
+# ── Run lock (prevents overlapping Task Scheduler runs) ───────────────────────
+
+def acquire_lock() -> None:
+    if os.path.exists(_LOCK_FILE):
+        age = time.time() - os.path.getmtime(_LOCK_FILE)
+        if age < _LOCK_MAX_AGE_SECONDS:
+            logger.warning(
+                f"Pipeline already running — lock file is {age:.0f}s old (< {_LOCK_MAX_AGE_SECONDS}s). Exiting."
+            )
+            sys.exit(0)
+        else:
+            logger.warning(f"Stale lock file found ({age:.0f}s old). Removing and continuing.")
+    os.makedirs(os.path.dirname(_LOCK_FILE), exist_ok=True)
+    with open(_LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def release_lock() -> None:
+    if os.path.exists(_LOCK_FILE):
+        os.remove(_LOCK_FILE)
 
 
 # ── Position state helpers ─────────────────────────────────────────────────────
@@ -51,8 +79,8 @@ def load_peak_equity() -> float:
 
 def update_positions(action: str, sizing: dict, execution: dict) -> None:
     """
-    Update positions.json after a successful order:
-    - open_long: append new position entry
+    Update positions.json after a successful order.
+    - open_long: append new position with entry + stop/TP order IDs
     - close_long: remove all open positions, update equity with realized PnL
     """
     data = _read_positions_file()
@@ -66,6 +94,9 @@ def update_positions(action: str, sizing: dict, execution: dict) -> None:
             "stop": sizing["stop_price"],
             "tp": sizing["tp_price"],
             "opened_at": now,
+            "entry_order_id": execution.get("entry_order_id", ""),
+            "stop_order_id": execution.get("stop_order_id", ""),
+            "tp_order_id": execution.get("tp_order_id", ""),
         }
         data["open_positions"].append(position)
         logger.info(f"Position opened: {position}")
@@ -98,9 +129,25 @@ def run():
 
     SYMBOL_PERP = args.symbol + ":USDT"
 
+    acquire_lock()
+    try:
+        _run_pipeline(args, SYMBOL_PERP)
+    finally:
+        release_lock()
+
+
+def _run_pipeline(args, SYMBOL_PERP: str) -> None:
     logger.info("=" * 60)
     logger.info("TRADING DATA PIPELINE")
     logger.info("=" * 60)
+
+    # 0. Sync positions against exchange (detect externally-closed positions)
+    logger.info("[0/6] Syncing open positions against exchange...")
+    from src.execution.position_monitor import sync_positions
+    try:
+        sync_positions(symbol=args.symbol)
+    except Exception as e:
+        logger.warning(f"      Position sync failed (non-fatal): {e}")
 
     # 1. Fetch OHLCV
     logger.info(f"[1/6] Fetching {args.symbol} {args.timeframe} candles from Bybit testnet...")
