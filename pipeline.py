@@ -12,8 +12,12 @@ from datetime import datetime, timezone
 # ── Absolute base dir — safe when run from any CWD (e.g. Task Scheduler) ──────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Force UTF-8 output on Windows
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+# Force UTF-8 output on Windows (safe-guarded for no-console environments like Task Scheduler)
+try:
+    if sys.stdout and hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+except Exception:
+    pass
 
 from src.utils.logger import get_logger
 from src.data.bybit_client import fetch_ohlcv
