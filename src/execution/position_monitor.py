@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 
 from src.data.bybit_client import get_exchange
+from src.db.database import insert_trade
 from src.utils.logger import get_logger
 
 logger = get_logger("position_monitor")
@@ -105,6 +106,26 @@ def sync_positions(symbol: str = "BTC/USDT") -> None:
             else:
                 pnl = 0.0
             total_pnl += pnl
+
+            scores = pos.get("signal_scores", {})
+            insert_trade({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "asset": symbol,
+                "direction": "buy",
+                "entry_price": entry,
+                "exit_price": filled_price,
+                "quantity": qty,
+                "regime": pos.get("regime"),
+                "signal_source": "fast_brain",
+                "confidence": pos.get("entry_confidence"),
+                "pnl_pct": (filled_price - entry) / entry if entry > 0 and filled_price > 0 else None,
+                "exit_reason": "stop" if trigger_label == "stop-loss" else "tp",
+                "technical_score": scores.get("technical_score"),
+                "funding_rate_score": scores.get("funding_rate_score"),
+                "oi_delta_score": scores.get("oi_delta_score"),
+                "ema_cross_score": scores.get("ema_cross_score"),
+                "composite_score": scores.get("composite_score"),
+            })
 
             logger.info(
                 f"Position externally closed via {trigger_label}: "

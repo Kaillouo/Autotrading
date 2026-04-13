@@ -23,7 +23,7 @@ from src.utils.logger import get_logger
 from src.data.bybit_client import fetch_ohlcv
 from src.data.bybit_derivatives import fetch_funding_rate_history, fetch_open_interest_history
 from src.signals.technical import compute_indicators
-from src.db.database import init_db, insert_candles, insert_derivatives_data, query_recent
+from src.db.database import init_db, insert_candles, insert_derivatives_data, query_recent, insert_trade
 
 logger = get_logger("pipeline")
 
@@ -81,11 +81,11 @@ def load_peak_equity() -> float:
     return float(_read_positions_file().get("peak_equity", 10000.0))
 
 
-def update_positions(action: str, sizing: dict, execution: dict) -> None:
+def update_positions(action: str, sizing: dict, execution: dict, signal: dict | None = None) -> None:
     """
     Update positions.json after a successful order.
-    - open_long: append new position with entry + stop/TP order IDs
-    - close_long: remove all open positions, update equity with realized PnL
+    - open_long: append new position with entry + stop/TP order IDs + signal context
+    - close_long: write completed trades to DB, remove positions, update equity
     """
     data = _read_positions_file()
     filled_price = execution.get("filled_price", 0.0)
@@ -102,6 +102,10 @@ def update_positions(action: str, sizing: dict, execution: dict) -> None:
             "stop_order_id": execution.get("stop_order_id", ""),
             "tp_order_id": execution.get("tp_order_id", ""),
         }
+        if signal:
+            position["signal_scores"] = signal.get("signals", {})
+            position["regime"] = signal.get("regime", "unknown")
+            position["entry_confidence"] = signal.get("confidence", 0.0)
         data["open_positions"].append(position)
         logger.info(f"Position opened: {position}")
 
@@ -115,6 +119,29 @@ def update_positions(action: str, sizing: dict, execution: dict) -> None:
                 gross_pnl = (filled_price - entry) * qty
                 commission = (entry + filled_price) * qty * commission_pct
                 total_pnl += gross_pnl - commission
+
+        for pos in data["open_positions"]:
+            scores = pos.get("signal_scores", {})
+            entry = float(pos.get("entry_price", 0.0))
+            insert_trade({
+                "timestamp": now,
+                "asset": signal.get("asset") if signal else None,
+                "direction": "buy",
+                "entry_price": entry,
+                "exit_price": filled_price,
+                "quantity": pos.get("quantity"),
+                "regime": pos.get("regime"),
+                "signal_source": "fast_brain",
+                "confidence": pos.get("entry_confidence"),
+                "pnl_pct": (filled_price - entry) / entry if entry > 0 and filled_price > 0 else None,
+                "exit_reason": "signal",
+                "technical_score": scores.get("technical_score"),
+                "funding_rate_score": scores.get("funding_rate_score"),
+                "oi_delta_score": scores.get("oi_delta_score"),
+                "ema_cross_score": scores.get("ema_cross_score"),
+                "composite_score": scores.get("composite_score"),
+            })
+
         data["equity"] = round(data["equity"] + total_pnl, 4)
         data["peak_equity"] = round(max(data["equity"], data["peak_equity"]), 4)
         data["open_positions"] = []
@@ -207,7 +234,7 @@ def _run_pipeline(args, SYMBOL_PERP: str) -> None:
         execution = execute_signal(result, sizing, symbol=args.symbol)
         if execution["success"]:
             logger.info(f"      Order placed: {execution}")
-            update_positions(result["action"], sizing, execution)
+            update_positions(result["action"], sizing, execution, signal=signal)
         else:
             logger.error(f"      Order failed: {execution['error']}")
 

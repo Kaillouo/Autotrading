@@ -57,7 +57,12 @@ def init_db():
             confidence REAL,
             pnl_pct REAL,
             exit_reason TEXT,
-            notes TEXT
+            notes TEXT,
+            technical_score REAL,
+            funding_rate_score REAL,
+            oi_delta_score REAL,
+            ema_cross_score REAL,
+            composite_score REAL
         )
     """)
 
@@ -130,6 +135,48 @@ def init_db():
         except Exception:
             pass  # column already exists
 
+    # ── Session 7: migration for existing DBs ──────────────────────────────────
+    for col in ("technical_score", "funding_rate_score", "oi_delta_score", "ema_cross_score", "composite_score"):
+        try:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} REAL")
+        except Exception:
+            pass  # column already exists
+
+    conn.commit()
+    conn.close()
+
+
+def insert_trade(trade: dict) -> None:
+    """Insert a completed trade record into the trades table. All fields optional except timestamp."""
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO trades (
+            timestamp, asset, direction, entry_price, exit_price, quantity,
+            regime, signal_source, confidence, pnl_pct, exit_reason,
+            technical_score, funding_rate_score, oi_delta_score, ema_cross_score, composite_score
+        ) VALUES (
+            :timestamp, :asset, :direction, :entry_price, :exit_price, :quantity,
+            :regime, :signal_source, :confidence, :pnl_pct, :exit_reason,
+            :technical_score, :funding_rate_score, :oi_delta_score, :ema_cross_score, :composite_score
+        )
+    """, {
+        "timestamp": trade.get("timestamp"),
+        "asset": trade.get("asset"),
+        "direction": trade.get("direction"),
+        "entry_price": trade.get("entry_price"),
+        "exit_price": trade.get("exit_price"),
+        "quantity": trade.get("quantity"),
+        "regime": trade.get("regime"),
+        "signal_source": trade.get("signal_source"),
+        "confidence": trade.get("confidence"),
+        "pnl_pct": trade.get("pnl_pct"),
+        "exit_reason": trade.get("exit_reason"),
+        "technical_score": trade.get("technical_score"),
+        "funding_rate_score": trade.get("funding_rate_score"),
+        "oi_delta_score": trade.get("oi_delta_score"),
+        "ema_cross_score": trade.get("ema_cross_score"),
+        "composite_score": trade.get("composite_score"),
+    })
     conn.commit()
     conn.close()
 
