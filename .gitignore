@@ -12,6 +12,9 @@ build/
 
 # Data
 data/*.db
+data/signal.json
+data/pipeline.lock
+data/telegram_offset.json
 
 # Logs
 logs/

@@ -1,0 +1,54 @@
+{
+  "date": "2026-04-10",
+  "period_start": "2025-10-05 01:00:00+00:00",
+  "period_end": "2026-03-31 22:00:00+00:00",
+  "candle_count": 4320,
+  "initial_capital": 10000.0,
+  "final_capital": 11155.48,
+  "total_return_pct": 11.5548,
+  "annualized_sharpe": 1.2548,
+  "win_rate_pct": 36.76,
+  "max_drawdown_pct": 4.6042,
+  "trade_count": 272,
+  "commission_pct": 0.001,
+  "regime_distribution": {
+    "ranging": 989,
+    "trending_up": 839,
+    "low_vol": 673,
+    "trending_down": 969,
+    "high_vol": 541
+  },
+  "regime_trade_breakdown": {
+    "trending_up": {
+      "count": 55,
+      "wins": 6,
+      "total_pnl": -824.5354589995507
+    },
+    "ranging": {
+      "count": 83,
+      "wins": 37,
+      "total_pnl": 1168.5586896713055
+    },
+    "trending_down": {
+      "count": 36,
+      "wins": 16,
+      "total_pnl": 112.93936813028607
+    },
+    "high_vol": {
+      "count": 93,
+      "wins": 38,
+      "total_pnl": 678.1686169632123
+    },
+    "low_vol": {
+      "count": 5,
+      "wins": 3,
+      "total_pnl": 20.349876176563942
+    }
+  },
+  "exit_reasons": {
+    "stop": 169,
+    "sell_signal": 12,
+    "tp": 90,
+    "end_of_data": 1
+  }
+}
