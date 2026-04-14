@@ -51,6 +51,7 @@ def sync_positions(symbol: str = "BTC/USDT") -> None:
     commission_pct = 0.001
     positions_to_keep = []
     total_pnl = 0.0
+    pending_alerts = []
 
     for pos in open_positions:
         stop_order_id = pos.get("stop_order_id", "")
@@ -127,6 +128,14 @@ def sync_positions(symbol: str = "BTC/USDT") -> None:
                 "composite_score": scores.get("composite_score"),
             })
 
+            pending_alerts.append({
+                "exit_price": filled_price,
+                "pnl": pnl,
+                "regime": pos.get("regime", "unknown"),
+                "confidence": pos.get("entry_confidence", 0.0),
+                "exit_reason": "stop" if trigger_label == "stop-loss" else "tp",
+            })
+
             logger.info(
                 f"Position externally closed via {trigger_label}: "
                 f"entry={entry:.2f} exit={filled_price:.2f} qty={qty:.6f} pnl={pnl:.4f}"
@@ -147,5 +156,14 @@ def sync_positions(symbol: str = "BTC/USDT") -> None:
             f"Sync complete: {closed_count} position(s) closed externally. "
             f"Total PnL={total_pnl:.4f} | New equity={data['equity']:.2f}"
         )
+
+        from src.notifications.telegram import send_trade_alert
+        for alert in pending_alerts:
+            send_trade_alert(
+                "close", symbol, alert["exit_price"],
+                alert["regime"], alert["confidence"],
+                pnl=alert["pnl"], exit_reason=alert["exit_reason"],
+                equity=data["equity"],
+            )
     else:
         logger.info("Sync complete: all positions still open on exchange.")

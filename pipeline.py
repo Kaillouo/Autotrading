@@ -228,13 +228,47 @@ def _run_pipeline(args, SYMBOL_PERP: str) -> None:
         f"action={result['action']} reason={result['reason']}"
     )
 
+    if not result["approved"] and "drawdown" in result["reason"].lower():
+        from src.notifications.telegram import send_drawdown_warning
+        dd_pct = (peak_equity - current_equity) / peak_equity * 100 if peak_equity > 0 else 0.0
+        send_drawdown_warning(current_equity, peak_equity, dd_pct)
+
     if result["approved"] and result["action"] != "hold":
         signal_price = float(signal.get("current_price", 0.0))
         sizing = calculate_position_size(signal, current_equity, current_price=signal_price)
         execution = execute_signal(result, sizing, symbol=args.symbol)
         if execution["success"]:
             logger.info(f"      Order placed: {execution}")
+
+            # Compute close PnL before update_positions clears positions
+            close_pnl = None
+            if result["action"] == "close_long":
+                commission_pct = 0.001
+                fp = execution["filled_price"]
+                close_pnl = sum(
+                    (fp - float(p["entry_price"])) * float(p["quantity"])
+                    - (float(p["entry_price"]) + fp) * float(p["quantity"]) * commission_pct
+                    for p in open_positions
+                    if float(p.get("entry_price", 0)) > 0 and fp > 0
+                )
+
             update_positions(result["action"], sizing, execution, signal=signal)
+
+            from src.notifications.telegram import send_trade_alert
+            new_equity = load_equity()
+            if result["action"] == "open_long":
+                send_trade_alert(
+                    "open", args.symbol, execution["filled_price"],
+                    signal["regime"], signal["confidence"],
+                    stop_price=sizing["stop_price"], tp_price=sizing["tp_price"],
+                    equity=new_equity,
+                )
+            elif result["action"] == "close_long":
+                send_trade_alert(
+                    "close", args.symbol, execution["filled_price"],
+                    signal["regime"], signal["confidence"],
+                    pnl=close_pnl, exit_reason="signal", equity=new_equity,
+                )
         else:
             logger.error(f"      Order failed: {execution['error']}")
 
